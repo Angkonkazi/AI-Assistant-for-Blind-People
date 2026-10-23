@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.util.Locale
 import java.util.concurrent.Executors
 
 @Composable
@@ -45,7 +46,9 @@ fun CameraScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Detections displayed by the overlay.
+    // Process one out of every four analyzer frames.
+    val frameSamplingInterval = 4
+
     var detections by remember {
         mutableStateOf<List<YOLODetection>>(emptyList())
     }
@@ -62,7 +65,6 @@ fun CameraScreen(
         YOLODetector(context.applicationContext)
     }
 
-    // Stabilizes detections between inference results.
     val stabilizer = remember {
         DetectionStabilizer(
             retentionMs = 400L,
@@ -80,6 +82,14 @@ fun CameraScreen(
     }
 
     var stabilizedCount by remember {
+        mutableIntStateOf(0)
+    }
+
+    var analyzedFrameCount by remember {
+        mutableIntStateOf(0)
+    }
+
+    var processedFrameCount by remember {
         mutableIntStateOf(0)
     }
 
@@ -106,6 +116,10 @@ fun CameraScreen(
         cameraExecutor
     ) {
         var isDisposed = false
+
+        // Used only on the single analyzer thread.
+        var frameCounter = 0
+        var inferenceCounter = 0
 
         val cameraProviderFuture =
             ProcessCameraProvider.getInstance(context)
@@ -145,6 +159,21 @@ fun CameraScreen(
                         var rotatedBitmap: Bitmap? = null
 
                         try {
+                            frameCounter++
+
+                            // Skip 3 out of every 4 frames.
+                            // The finally block still closes each ImageProxy.
+                            if (
+                                frameCounter % frameSamplingInterval != 0
+                            ) {
+                                return@setAnalyzer
+                            }
+
+                            inferenceCounter++
+
+                            analyzedFrameCount = frameCounter
+                            processedFrameCount = inferenceCounter
+
                             cameraStatus =
                                 "Receiving camera frames"
 
@@ -180,7 +209,7 @@ fun CameraScreen(
 
                                 val frame = rotatedBitmap
 
-                                // Step 1: Raw YOLO11n predictions.
+                                // Step 1: Run YOLO11n inference.
                                 val rawDetections =
                                     detector.detect(frame)
 
@@ -193,21 +222,46 @@ fun CameraScreen(
                                 imageHeight = frame.height
                                 detections = stabilizedDetections
 
-                                // Keep original model diagnostics.
                                 debugInfo = detector.getDebugInfo()
 
                                 stabilizedCount =
                                     stabilizedDetections.size
 
-                                if (rawDetections.isNotEmpty()) {
+                                // Step 4: Log each detected object.
+                                // Coordinates refer to the rotated
+                                // camera image, not screen pixels.
+                                for (detection in rawDetections) {
+
+                                    val box = detection.boundingBox
+
+                                    val message = String.format(
+                                        Locale.US,
+                                        "Detected: %s, confidence=%.2f, " +
+                                                "x=%d, y=%d, " +
+                                                "left=%d, top=%d, " +
+                                                "right=%d, bottom=%d",
+                                        detection.label,
+                                        detection.confidence,
+                                        box.centerX().toInt(),
+                                        box.centerY().toInt(),
+                                        box.left.toInt(),
+                                        box.top.toInt(),
+                                        box.right.toInt(),
+                                        box.bottom.toInt()
+                                    )
+
                                     Log.d(
                                         "YOLODetection",
-                                        rawDetections.joinToString {
-                                            "${it.label}: " +
-                                                    "${(it.confidence * 100).toInt()}%"
-                                        }
+                                        message
                                     )
                                 }
+
+                                Log.d(
+                                    "YOLOFrameSampling",
+                                    "Analyzer frames=$frameCounter, " +
+                                            "processed=$inferenceCounter, " +
+                                            "interval=$frameSamplingInterval"
+                                )
 
                             } else {
                                 debugInfo = detector.getDebugInfo()
@@ -261,7 +315,8 @@ fun CameraScreen(
 
                     Log.d(
                         "CameraScreen",
-                        "Camera, YOLO11n and stabilizer started"
+                        "Camera, YOLO11n, frame sampling " +
+                                "and stabilizer started"
                     )
 
                 } catch (e: Exception) {
@@ -300,7 +355,6 @@ fun CameraScreen(
                 }
             }
 
-            // Clean up on the same thread used for inference.
             cameraExecutor.execute {
                 stabilizer.reset()
                 detector.close()
@@ -340,7 +394,7 @@ fun CameraScreen(
         ) {
 
             Text(
-                text = "YOLO11n STABILIZATION DEBUG",
+                text = "YOLO11n FRAME SAMPLING DEBUG",
                 color = Color.Yellow,
                 fontSize = 15.sp
             )
@@ -348,6 +402,21 @@ fun CameraScreen(
             DebugLine("Camera", cameraStatus)
             DebugLine("Model", debugInfo.modelStatus)
             DebugLine("Inference", debugInfo.inferenceStatus)
+
+            DebugLine(
+                "Sampling interval",
+                "Every $frameSamplingInterval frames"
+            )
+
+            DebugLine(
+                "Analyzer frames",
+                analyzedFrameCount.toString()
+            )
+
+            DebugLine(
+                "Processed frames",
+                processedFrameCount.toString()
+            )
 
             DebugLine(
                 "Raw YOLO objects",

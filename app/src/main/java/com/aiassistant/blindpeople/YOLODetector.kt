@@ -183,6 +183,17 @@ class YOLODetector(
             model.run(inputBuffer, output)
 
             val predictions = output[0]
+            // Developer A - Task A0: Raw YOLO Coordinate Verification
+            for (i in 0 until 5) {
+                Log.d(
+                    "YOLO_COORD_CHECK",
+                    "Box $i: " +
+                            "cx=${predictions[0][i]}, " +
+                            "cy=${predictions[1][i]}, " +
+                            "w=${predictions[2][i]}, " +
+                            "h=${predictions[3][i]}"
+                )
+            }
 
             var maximumConfidence = 0f
             var bestClassId = -1

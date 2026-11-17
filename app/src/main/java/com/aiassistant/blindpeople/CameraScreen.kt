@@ -9,6 +9,8 @@ import android.view.ViewGroup
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -178,8 +180,32 @@ fun CameraScreen(
                                 "Receiving camera frames"
 
                             if (detector.isModelLoaded()) {
+                                Log.d(
+                                    "CAMERA_CROP_CHECK",
+                                    "Image size: ${imageProxy.width}x${imageProxy.height}, " +
+                                            "CropRect: ${imageProxy.cropRect}, " +
+                                            "Rotation: ${imageProxy.imageInfo.rotationDegrees}"
+                                )
 
-                                bitmap = imageProxy.toBitmap()
+                                val fullBitmap = imageProxy.toBitmap()
+                                val crop = imageProxy.cropRect
+
+                                bitmap = Bitmap.createBitmap(
+                                    fullBitmap,
+                                    crop.left,
+                                    crop.top,
+                                    crop.width(),
+                                    crop.height()
+                                )
+
+                                if (bitmap !== fullBitmap) {
+                                    fullBitmap.recycle()
+                                }
+                                Log.d(
+                                    "BITMAP_SIZE_CHECK",
+                                    "Bitmap: ${bitmap.width}x${bitmap.height}, " +
+                                            "CropRect: ${imageProxy.cropRect}"
+                                )
 
                                 val rotationDegrees =
                                     imageProxy.imageInfo.rotationDegrees
@@ -301,14 +327,23 @@ fun CameraScreen(
                             imageProxy.close()
                         }
                     }
+                    val sharedViewPort = previewView.viewPort
+                        ?: throw IllegalStateException(
+                            "Camera PreviewView viewport is not ready"
+                        )
+
+                    val useCaseGroup = UseCaseGroup.Builder()
+                        .setViewPort(sharedViewPort)
+                        .addUseCase(preview)
+                        .addUseCase(imageAnalysis)
+                        .build()
 
                     cameraProvider.unbindAll()
 
                     cameraProvider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageAnalysis
+                        useCaseGroup
                     )
 
                     cameraStatus = "Camera started"

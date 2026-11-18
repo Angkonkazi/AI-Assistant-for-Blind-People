@@ -113,7 +113,7 @@ class YOLODetector(
                 }
 
             val options = Interpreter.Options().apply {
-                setNumThreads(2)
+                setNumThreads(4)
             }
 
             interpreter = Interpreter(modelBuffer, options)
@@ -172,7 +172,18 @@ class YOLODetector(
         val startTime = System.nanoTime()
 
         return try {
+            // Developer A - Preprocessing Performance Measurement
+            val preprocessStartTime = System.nanoTime()
+
             val inputBuffer = preprocess(bitmap)
+
+            val preprocessMs =
+                (System.nanoTime() - preprocessStartTime) / 1_000_000L
+
+            Log.d(
+                "YOLO_PERFORMANCE",
+                "Preprocessing Time: $preprocessMs ms"
+            )
 
             val output = Array(1) {
                 Array(OUTPUT_CHANNELS) {
@@ -180,7 +191,22 @@ class YOLODetector(
                 }
             }
 
+            // Developer A - Start actual YOLO inference timer
+            val inferenceStartTime = System.nanoTime()
+
             model.run(inputBuffer, output)
+
+            // Developer A - Calculate actual YOLO inference time
+            val modelInferenceMs =
+                (System.nanoTime() - inferenceStartTime) / 1_000_000L
+            // Developer A - YOLO Inference Performance Log
+            Log.d(
+                "YOLO_PERFORMANCE",
+                "Model Inference Time: $modelInferenceMs ms"
+            )
+
+            // Developer A - Start postprocessing timer
+            val postprocessStartTime = System.nanoTime()
 
             val predictions = output[0]
             // Developer A - Task A0: Raw YOLO Coordinate Verification
@@ -353,6 +379,16 @@ class YOLODetector(
                 } else {
                     "None"
                 }
+
+
+            // Developer A - Calculate postprocessing time
+            val postprocessMs =
+                (System.nanoTime() - postprocessStartTime) / 1_000_000L
+
+            Log.d(
+                "YOLO_PERFORMANCE",
+                "Postprocessing Time: $postprocessMs ms"
+            )
 
             val elapsedMs =
                 (System.nanoTime() - startTime) / 1_000_000L

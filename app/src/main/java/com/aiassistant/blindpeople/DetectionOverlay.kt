@@ -1,5 +1,7 @@
+
 package com.aiassistant.blindpeople
 
+import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -10,14 +12,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import android.graphics.Paint
 import kotlin.math.max
 import kotlin.math.min
 
 @Composable
 fun DetectionOverlay(
     detections: List<YOLODetection>,
+    selectedDetection: YOLODetection?,
     imageWidth: Int,
     imageHeight: Int,
     modifier: Modifier = Modifier
@@ -26,14 +27,12 @@ fun DetectionOverlay(
         modifier = modifier.fillMaxSize()
     ) {
 
-        if (
-            imageWidth <= 0 ||
-            imageHeight <= 0 ||
-            detections.isEmpty()
-        ) {
+        // Check if camera image dimensions are valid.
+        if (imageWidth <= 0 || imageHeight <= 0) {
             return@Canvas
         }
 
+        // Keep the existing bounding box transformation.
         val scale = max(
             size.width / imageWidth.toFloat(),
             size.height / imageHeight.toFloat()
@@ -48,10 +47,101 @@ fun DetectionOverlay(
         val offsetY =
             (size.height - displayedHeight) / 2f
 
-        val boxColor = Color.Green
+        // ============================================
+        // Task A4: 3x3 Spatial Grid
+        // ============================================
 
+        val gridColor = Color.Cyan.copy(alpha = 0.45f)
+        val gridStroke = 1f * density
+
+        // First vertical line
+        drawLine(
+            color = gridColor,
+            start = Offset(size.width / 3f, 0f),
+            end = Offset(size.width / 3f, size.height),
+            strokeWidth = gridStroke
+        )
+
+        // Second vertical line
+        drawLine(
+            color = gridColor,
+            start = Offset(size.width * 2f / 3f, 0f),
+            end = Offset(size.width * 2f / 3f, size.height),
+            strokeWidth = gridStroke
+        )
+
+        // First horizontal line
+        drawLine(
+            color = gridColor,
+            start = Offset(0f, size.height / 3f),
+            end = Offset(size.width, size.height / 3f),
+            strokeWidth = gridStroke
+        )
+
+        // Second horizontal line
+        drawLine(
+            color = gridColor,
+            start = Offset(0f, size.height * 2f / 3f),
+            end = Offset(size.width, size.height * 2f / 3f),
+            strokeWidth = gridStroke
+        )
+
+        // ============================================
+        // Task A4: Center Focus Marker
+        // ============================================
+
+        val focusCenter = Offset(
+            x = size.width / 2f,
+            y = size.height / 2f
+        )
+
+        val focusColor = Color.Red
+        val markerSize = 18f * density
+        val markerStroke = 2f * density
+
+        drawCircle(
+            color = focusColor,
+            radius = markerSize,
+            center = focusCenter,
+            style = Stroke(width = markerStroke)
+        )
+
+        // Horizontal crosshair line
+        drawLine(
+            color = focusColor,
+            start = Offset(
+                focusCenter.x - markerSize * 1.5f,
+                focusCenter.y
+            ),
+            end = Offset(
+                focusCenter.x + markerSize * 1.5f,
+                focusCenter.y
+            ),
+            strokeWidth = markerStroke
+        )
+
+        // Vertical crosshair line
+        drawLine(
+            color = focusColor,
+            start = Offset(
+                focusCenter.x,
+                focusCenter.y - markerSize * 1.5f
+            ),
+            end = Offset(
+                focusCenter.x,
+                focusCenter.y + markerSize * 1.5f
+            ),
+            strokeWidth = markerStroke
+        )
+
+        // ============================================
+        // Existing YOLO Bounding Box Drawing
+        // ============================================
+
+        // Developer A - Selected Object Highlight Colors
+        val normalBoxColor = Color.Green
+        val selectedBoxColor = Color.Yellow
         val strokeWidth = 3f * density
-
         val textSize = 14f * density
 
         val textPaint = Paint().apply {
@@ -68,7 +158,14 @@ fun DetectionOverlay(
         }
 
         detections.forEach { detection ->
+            // Developer A - Check selected focus object
+            val isSelected = selectedDetection == detection
 
+            val currentBoxColor =
+                if (isSelected) selectedBoxColor else normalBoxColor
+
+            val currentStrokeWidth =
+                if (isSelected) 5f * density else 3f * density
             val box = detection.boundingBox
 
             val left = box.left * scale + offsetX
@@ -104,7 +201,7 @@ fun DetectionOverlay(
             }
 
             drawRect(
-                color = boxColor,
+                color = currentBoxColor,
                 topLeft = Offset(
                     clampedLeft,
                     clampedTop
@@ -114,15 +211,20 @@ fun DetectionOverlay(
                     clampedBottom - clampedTop
                 ),
                 style = Stroke(
-                    width = strokeWidth
+                    width = currentStrokeWidth
                 )
             )
 
             val confidencePercent =
                 (detection.confidence * 100).toInt()
 
+            // Developer A - Selected Focus Object Label
             val labelText =
-                "${detection.label} $confidencePercent%"
+                if (isSelected) {
+                    "${detection.label} $confidencePercent% [FOCUS]"
+                } else {
+                    "${detection.label} $confidencePercent%"
+                }
 
             val textWidth =
                 textPaint.measureText(labelText)
@@ -150,8 +252,7 @@ fun DetectionOverlay(
 
             drawIntoCanvas { canvas ->
 
-                val nativeCanvas =
-                    canvas.nativeCanvas
+                val nativeCanvas = canvas.nativeCanvas
 
                 nativeCanvas.drawRect(
                     labelLeft,

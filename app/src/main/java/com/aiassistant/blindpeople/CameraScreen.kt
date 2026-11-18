@@ -10,7 +10,6 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
-import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -48,11 +47,16 @@ fun CameraScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // Process one out of every four analyzer frames.
+    // Process one out of every four frames.
     val frameSamplingInterval = 4
 
     var detections by remember {
         mutableStateOf<List<YOLODetection>>(emptyList())
+    }
+
+    // Developer A: Selected Focus Object State
+    var selectedDetection by remember {
+        mutableStateOf<YOLODetection?>(null)
     }
 
     var imageWidth by remember {
@@ -119,7 +123,7 @@ fun CameraScreen(
     ) {
         var isDisposed = false
 
-        // Used only on the single analyzer thread.
+        // Analyzer-thread counters
         var frameCounter = 0
         var inferenceCounter = 0
 
@@ -164,7 +168,7 @@ fun CameraScreen(
                             frameCounter++
 
                             // Skip 3 out of every 4 frames.
-                            // The finally block still closes each ImageProxy.
+                            // ImageProxy is still closed in finally.
                             if (
                                 frameCounter % frameSamplingInterval != 0
                             ) {
@@ -180,6 +184,7 @@ fun CameraScreen(
                                 "Receiving camera frames"
 
                             if (detector.isModelLoaded()) {
+
                                 Log.d(
                                     "CAMERA_CROP_CHECK",
                                     "Image size: ${imageProxy.width}x${imageProxy.height}, " +
@@ -187,7 +192,10 @@ fun CameraScreen(
                                             "Rotation: ${imageProxy.imageInfo.rotationDegrees}"
                                 )
 
-                                val fullBitmap = imageProxy.toBitmap()
+                                // Crop the camera image.
+                                val fullBitmap =
+                                    imageProxy.toBitmap()
+
                                 val crop = imageProxy.cropRect
 
                                 bitmap = Bitmap.createBitmap(
@@ -201,12 +209,14 @@ fun CameraScreen(
                                 if (bitmap !== fullBitmap) {
                                     fullBitmap.recycle()
                                 }
+
                                 Log.d(
                                     "BITMAP_SIZE_CHECK",
                                     "Bitmap: ${bitmap.width}x${bitmap.height}, " +
                                             "CropRect: ${imageProxy.cropRect}"
                                 )
 
+                                // Rotate cropped image.
                                 val rotationDegrees =
                                     imageProxy.imageInfo.rotationDegrees
 
@@ -228,7 +238,6 @@ fun CameraScreen(
                                             matrix,
                                             true
                                         )
-
                                     } else {
                                         bitmap
                                     }
@@ -239,9 +248,88 @@ fun CameraScreen(
                                 val rawDetections =
                                     detector.detect(frame)
 
+                                // Developer A:
+                                // Horizontal and Vertical Direction
+                                val spatialAnalyzer =
+                                    SpatialAnalyzer()
+
+                                val focusPointManager =
+                                    FocusPointManager()
+
+                                for (detection in rawDetections) {
+
+                                    val horizontal =
+                                        spatialAnalyzer.getHorizontalPosition(
+                                            detection = detection,
+                                            imageWidth = frame.width
+                                        )
+
+                                    val vertical =
+                                        spatialAnalyzer.getVerticalPosition(
+                                            detection = detection,
+                                            imageHeight = frame.height
+                                        )
+
+                                    val focusResult =
+                                        focusPointManager.analyzeFocus(
+                                            detection = detection,
+                                            imageWidth = frame.width,
+                                            imageHeight = frame.height
+                                        )
+
+                                    Log.d(
+                                        "FOCUS_POINT_CHECK",
+                                        "Object=${detection.label}, " +
+                                                "Relation=${focusResult.relation}, " +
+                                                "ContainsFocus=${focusResult.containsFocusPoint}, " +
+                                                "Distance=${focusResult.normalizedDistance}"
+                                    )
+
+                                    Log.d(
+                                        "SPATIAL_DIRECTION",
+                                        "Object=${detection.label}, " +
+                                                "X=${horizontal.normalizedCenterX}, " +
+                                                "Y=${vertical.normalizedCenterY}, " +
+                                                "Horizontal=${horizontal.zone}, " +
+                                                "Vertical=${vertical.zone}"
+                                    )
+                                }
+
                                 // Step 2: Stabilize bounding boxes.
                                 val stabilizedDetections =
                                     stabilizer.update(rawDetections)
+
+                                // Developer A - Task A3:
+                                // Select focus object.
+                                val selectedFocus =
+                                    focusPointManager.selectFocusObject(
+                                        detections = stabilizedDetections,
+                                        imageWidth = frame.width,
+                                        imageHeight = frame.height
+                                    )
+
+                                // ====================================
+                                // Developer A - Task A4
+                                // Save selected object for overlay UI.
+                                // NEW LINE ADDED HERE
+                                // ====================================
+                                selectedDetection =
+                                    selectedFocus?.detection
+
+                                if (selectedFocus != null) {
+                                    Log.d(
+                                        "FOCUS_SELECTION",
+                                        "Selected=${selectedFocus.detection.label}, " +
+                                                "Relation=${selectedFocus.relation}, " +
+                                                "Confidence=${selectedFocus.detection.confidence}, " +
+                                                "Distance=${selectedFocus.normalizedDistance}"
+                                    )
+                                } else {
+                                    Log.d(
+                                        "FOCUS_SELECTION",
+                                        "No object selected"
+                                    )
+                                }
 
                                 // Step 3: Update visual overlay.
                                 imageWidth = frame.width
@@ -253,9 +341,8 @@ fun CameraScreen(
                                 stabilizedCount =
                                     stabilizedDetections.size
 
-                                // Step 4: Log each detected object.
-                                // Coordinates refer to the rotated
-                                // camera image, not screen pixels.
+                                // Step 4: Log raw detected objects.
+                                // Coordinates refer to rotated image.
                                 for (detection in rawDetections) {
 
                                     val box = detection.boundingBox
@@ -302,11 +389,12 @@ fun CameraScreen(
                             cameraStatus =
                                 "Frame processing failed"
 
-                            debugInfo = detector.getDebugInfo().copy(
-                                inferenceStatus =
-                                    "Camera frame error",
-                                errorMessage = message
-                            )
+                            debugInfo =
+                                detector.getDebugInfo().copy(
+                                    inferenceStatus =
+                                        "Camera frame error",
+                                    errorMessage = message
+                                )
 
                             Log.e(
                                 "CameraScreen",
@@ -327,16 +415,20 @@ fun CameraScreen(
                             imageProxy.close()
                         }
                     }
-                    val sharedViewPort = previewView.viewPort
-                        ?: throw IllegalStateException(
-                            "Camera PreviewView viewport is not ready"
-                        )
 
-                    val useCaseGroup = UseCaseGroup.Builder()
-                        .setViewPort(sharedViewPort)
-                        .addUseCase(preview)
-                        .addUseCase(imageAnalysis)
-                        .build()
+                    // Shared camera viewport
+                    val sharedViewPort =
+                        previewView.viewPort
+                            ?: throw IllegalStateException(
+                                "Camera PreviewView viewport is not ready"
+                            )
+
+                    val useCaseGroup =
+                        UseCaseGroup.Builder()
+                            .setViewPort(sharedViewPort)
+                            .addUseCase(preview)
+                            .addUseCase(imageAnalysis)
+                            .build()
 
                     cameraProvider.unbindAll()
 
@@ -359,11 +451,12 @@ fun CameraScreen(
                     cameraStatus =
                         "Camera initialization failed"
 
-                    debugInfo = detector.getDebugInfo().copy(
-                        errorMessage =
-                            "${e.javaClass.simpleName}: " +
-                                    (e.message ?: "Unknown error")
-                    )
+                    debugInfo =
+                        detector.getDebugInfo().copy(
+                            errorMessage =
+                                "${e.javaClass.simpleName}: " +
+                                        (e.message ?: "Unknown error")
+                        )
 
                     Log.e(
                         "CameraScreen",
@@ -399,6 +492,10 @@ fun CameraScreen(
         }
     }
 
+    // ============================================
+    // Camera Preview and Detection Overlay UI
+    // ============================================
+
     Box(
         modifier = modifier.fillMaxSize()
     ) {
@@ -410,6 +507,7 @@ fun CameraScreen(
 
         DetectionOverlay(
             detections = detections,
+            selectedDetection = selectedDetection,
             imageWidth = imageWidth,
             imageHeight = imageHeight,
             modifier = Modifier.fillMaxSize()

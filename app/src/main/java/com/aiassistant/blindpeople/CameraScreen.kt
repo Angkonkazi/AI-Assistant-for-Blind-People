@@ -15,10 +15,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -31,13 +38,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.aiassistant.blindpeople.distance.CalibratedDistanceProcessor
+import com.aiassistant.blindpeople.distance.CalibrationSample
+import com.aiassistant.blindpeople.distance.CameraCalibrationProfile
+import com.aiassistant.blindpeople.distance.CameraConfiguration
+import com.aiassistant.blindpeople.distance.DistanceCalibration
+import com.aiassistant.blindpeople.distance.DistanceDetectionInput
 import java.util.Locale
 import java.util.concurrent.Executors
+
+/**
+ * Session-only reference object for controlled
+ * distance experiments.
+ */
+private data class DistanceDemoReference(
+    val classId: Int,
+    val label: String,
+    val measuredHeightMeters: Float
+)
 
 @Composable
 fun CameraScreen(
@@ -59,6 +83,54 @@ fun CameraScreen(
 
     var imageHeight by remember {
         mutableIntStateOf(0)
+    }
+
+    // Distance is initially unavailable.
+    // No example calibration values are used.
+    var distanceMetersByIndex by remember {
+        mutableStateOf<Map<Int, Float?>>(emptyMap())
+    }
+
+    var currentRotationDegrees by remember {
+        mutableIntStateOf(0)
+    }
+
+    var measuredHeightText by remember {
+        mutableStateOf("")
+    }
+
+    var measuredDistanceText by remember {
+        mutableStateOf("")
+    }
+
+    var calibrationMessage by remember {
+        mutableStateOf(
+            "Distance: Unknown (calibrate a measured reference object)"
+        )
+    }
+
+    var demoReference by remember {
+        mutableStateOf<DistanceDemoReference?>(null)
+    }
+
+    val distanceProcessor = remember {
+        CalibratedDistanceProcessor()
+    }
+
+    val distanceLock = remember { Any() }
+
+    // These camera identifiers are placeholders
+    // for this experimental session only.
+    // Do not save this profile permanently.
+    fun activeCameraConfiguration(): CameraConfiguration {
+        return CameraConfiguration(
+            cameraId = "cameraX-default-back-session-only",
+            lensId = "back-default-session-only",
+            imageWidth = imageWidth,
+            imageHeight = imageHeight,
+            rotationDegrees = currentRotationDegrees,
+            zoomRatio = 1.0f
+        )
     }
 
     val detector = remember {
@@ -117,7 +189,6 @@ fun CameraScreen(
     ) {
         var isDisposed = false
 
-        // Used only on the single analyzer thread.
         var frameCounter = 0
         var inferenceCounter = 0
 
@@ -161,8 +232,8 @@ fun CameraScreen(
                         try {
                             frameCounter++
 
-                            // Skip 3 out of every 4 frames.
-                            // The finally block still closes each ImageProxy.
+                            // Skip three out of every four frames.
+                            // Every ImageProxy is still closed.
                             if (
                                 frameCounter % frameSamplingInterval != 0
                             ) {
@@ -209,7 +280,7 @@ fun CameraScreen(
 
                                 val frame = rotatedBitmap
 
-                                // Step 1: Run YOLO11n inference.
+                                // Step 1: YOLO11n inference.
                                 val rawDetections =
                                     detector.detect(frame)
 
@@ -217,22 +288,93 @@ fun CameraScreen(
                                 val stabilizedDetections =
                                     stabilizer.update(rawDetections)
 
-                                // Step 3: Update visual overlay.
+                                // Step 3: Update image information.
                                 imageWidth = frame.width
                                 imageHeight = frame.height
+                                currentRotationDegrees =
+                                    rotationDegrees
+
                                 detections = stabilizedDetections
 
-                                debugInfo = detector.getDebugInfo()
+                                // Step 4: Experimental distance.
+                                // Only one measured reference object
+                                // of its class may receive a known
+                                // physical height.
+                                val reference = demoReference
+
+                                val matchingCount =
+                                    if (reference == null) {
+                                        0
+                                    } else {
+                                        stabilizedDetections.count {
+                                            it.classId ==
+                                                    reference.classId
+                                        }
+                                    }
+
+                                val inputs =
+                                    stabilizedDetections.mapIndexed {
+                                            index, detection ->
+
+                                        val knownHeight =
+                                            if (
+                                                reference != null &&
+                                                matchingCount == 1 &&
+                                                detection.classId ==
+                                                reference.classId
+                                            ) {
+                                                reference.measuredHeightMeters
+                                            } else {
+                                                null
+                                            }
+
+                                        DistanceDetectionInput(
+                                            detectionIndex = index,
+                                            objectName = detection.label,
+                                            confidence =
+                                                detection.confidence,
+                                            left =
+                                                detection.boundingBox.left,
+                                            top =
+                                                detection.boundingBox.top,
+                                            right =
+                                                detection.boundingBox.right,
+                                            bottom =
+                                                detection.boundingBox.bottom,
+                                            realObjectHeightMeters =
+                                                knownHeight
+                                        )
+                                    }
+
+                                val configuration =
+                                    activeCameraConfiguration()
+
+                                val distanceResults =
+                                    synchronized(distanceLock) {
+                                        distanceProcessor.process(
+                                            detections = inputs,
+                                            currentConfiguration =
+                                                configuration
+                                        )
+                                    }
+
+                                distanceMetersByIndex =
+                                    distanceResults.associate {
+                                        it.detectionIndex to
+                                                it.distance.estimatedMeters
+                                    }
+
+                                debugInfo =
+                                    detector.getDebugInfo()
 
                                 stabilizedCount =
                                     stabilizedDetections.size
 
-                                // Step 4: Log each detected object.
-                                // Coordinates refer to the rotated
-                                // camera image, not screen pixels.
+                                // Log detected objects.
                                 for (detection in rawDetections) {
 
-                                    val box = detection.boundingBox
+                                    val box =
+                                        detection.boundingBox
 
                                     val message = String.format(
                                         Locale.US,
@@ -264,7 +406,8 @@ fun CameraScreen(
                                 )
 
                             } else {
-                                debugInfo = detector.getDebugInfo()
+                                debugInfo =
+                                    detector.getDebugInfo()
                             }
 
                         } catch (e: Exception) {
@@ -276,11 +419,12 @@ fun CameraScreen(
                             cameraStatus =
                                 "Frame processing failed"
 
-                            debugInfo = detector.getDebugInfo().copy(
-                                inferenceStatus =
-                                    "Camera frame error",
-                                errorMessage = message
-                            )
+                            debugInfo =
+                                detector.getDebugInfo().copy(
+                                    inferenceStatus =
+                                        "Camera frame error",
+                                    errorMessage = message
+                                )
 
                             Log.e(
                                 "CameraScreen",
@@ -324,11 +468,12 @@ fun CameraScreen(
                     cameraStatus =
                         "Camera initialization failed"
 
-                    debugInfo = detector.getDebugInfo().copy(
-                        errorMessage =
-                            "${e.javaClass.simpleName}: " +
-                                    (e.message ?: "Unknown error")
-                    )
+                    debugInfo =
+                        detector.getDebugInfo().copy(
+                            errorMessage =
+                                "${e.javaClass.simpleName}: " +
+                                        (e.message ?: "Unknown error")
+                        )
 
                     Log.e(
                         "CameraScreen",
@@ -377,7 +522,8 @@ fun CameraScreen(
             detections = detections,
             imageWidth = imageWidth,
             imageHeight = imageHeight,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            distanceMetersByIndex = distanceMetersByIndex
         )
 
         Column(
@@ -389,6 +535,8 @@ fun CameraScreen(
                     color = Color.Black.copy(alpha = 0.85f),
                     shape = RoundedCornerShape(10.dp)
                 )
+                .heightIn(max = 480.dp)
+                .verticalScroll(rememberScrollState())
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
@@ -399,9 +547,199 @@ fun CameraScreen(
                 fontSize = 15.sp
             )
 
-            DebugLine("Camera", cameraStatus)
-            DebugLine("Model", debugInfo.modelStatus)
-            DebugLine("Inference", debugInfo.inferenceStatus)
+            Text(
+                text = "DISTANCE EXPERIMENT (measured object only)",
+                color = Color.Yellow,
+                fontSize = 11.sp
+            )
+
+            Text(
+                text = "Aim at one object; measure its FULL height and " +
+                        "distance from the camera. Keep the same object in view.",
+                color = Color.White,
+                fontSize = 10.sp,
+                lineHeight = 12.sp
+            )
+
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(6.dp)
+            ) {
+
+                OutlinedTextField(
+                    value = measuredHeightText,
+                    onValueChange = {
+                        measuredHeightText = it
+                    },
+                    label = {
+                        Text(
+                            "Height (m)",
+                            fontSize = 10.sp
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Decimal
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+
+                OutlinedTextField(
+                    value = measuredDistanceText,
+                    onValueChange = {
+                        measuredDistanceText = it
+                    },
+                    label = {
+                        Text(
+                            "Distance (m)",
+                            fontSize = 10.sp
+                        )
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Decimal
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Button(
+                onClick = {
+
+                    val height =
+                        measuredHeightText.toFloatOrNull()
+
+                    val actualDistance =
+                        measuredDistanceText.toFloatOrNull()
+
+                    val topDetection =
+                        detections.maxByOrNull {
+                            it.confidence
+                        }
+
+                    val sameClassCount =
+                        if (topDetection == null) {
+                            0
+                        } else {
+                            detections.count {
+                                it.classId ==
+                                        topDetection.classId
+                            }
+                        }
+
+                    if (
+                        height == null ||
+                        !height.isFinite() ||
+                        height <= 0f ||
+                        actualDistance == null ||
+                        !actualDistance.isFinite() ||
+                        actualDistance <= 0f
+                    ) {
+                        calibrationMessage =
+                            "Enter positive measured values in meters"
+
+                    } else if (
+                        imageWidth <= 0 ||
+                        imageHeight <= 0 ||
+                        topDetection == null ||
+                        sameClassCount != 1
+                    ) {
+                        calibrationMessage =
+                            "Aim at ONE visible object of its class"
+
+                    } else {
+
+                        val sample = CalibrationSample(
+                            actualDistanceMeters =
+                                actualDistance,
+                            realObjectHeightMeters =
+                                height,
+                            objectHeightPixels =
+                                topDetection.boundingBox.height()
+                        )
+
+                        val calibration =
+                            DistanceCalibration()
+                                .calculateFocalLength(sample)
+
+                        val focal =
+                            calibration.focalLengthPixels
+
+                        if (
+                            !calibration.isValid ||
+                            focal == null
+                        ) {
+                            calibrationMessage =
+                                "Calibration failed: check full bounding box"
+
+                        } else {
+
+                            // Calibration is for this
+                            // session only.
+                            val profile =
+                                CameraCalibrationProfile(
+                                    configuration =
+                                        activeCameraConfiguration(),
+                                    focalLengthPixels = focal,
+                                    calibrationSampleCount = 1
+                                )
+
+                            val registered =
+                                synchronized(distanceLock) {
+                                    distanceProcessor
+                                        .registerCalibration(profile)
+                                }
+
+                            if (registered) {
+
+                                demoReference =
+                                    DistanceDemoReference(
+                                        classId =
+                                            topDetection.classId,
+                                        label =
+                                            topDetection.label,
+                                        measuredHeightMeters =
+                                            height
+                                    )
+
+                                calibrationMessage =
+                                    "TEST ONLY: ${topDetection.label}; " +
+                                            "keep the SAME measured object visible"
+
+                            } else {
+                                calibrationMessage =
+                                    "Calibration registration failed"
+                            }
+                        }
+                    }
+                }
+            ) {
+                Text(
+                    "Calibrate visible reference (TEST)"
+                )
+            }
+
+            Text(
+                text = calibrationMessage,
+                color = Color.Yellow,
+                fontSize = 10.sp,
+                lineHeight = 12.sp
+            )
+
+            DebugLine(
+                "Camera",
+                cameraStatus
+            )
+
+            DebugLine(
+                "Model",
+                debugInfo.modelStatus
+            )
+
+            DebugLine(
+                "Inference",
+                debugInfo.inferenceStatus
+            )
 
             DebugLine(
                 "Sampling interval",

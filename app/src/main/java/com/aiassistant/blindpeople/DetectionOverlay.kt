@@ -1,5 +1,7 @@
+
 package com.aiassistant.blindpeople
 
+import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -10,8 +12,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import android.graphics.Paint
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 
@@ -20,8 +21,10 @@ fun DetectionOverlay(
     detections: List<YOLODetection>,
     imageWidth: Int,
     imageHeight: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    distanceMetersByIndex: Map<Int, Float?> = emptyMap()
 ) {
+
     Canvas(
         modifier = modifier.fillMaxSize()
     ) {
@@ -51,14 +54,14 @@ fun DetectionOverlay(
         val boxColor = Color.Green
 
         val strokeWidth = 3f * density
-
         val textSize = 14f * density
 
         val textPaint = Paint().apply {
             color = android.graphics.Color.WHITE
             this.textSize = textSize
             isAntiAlias = true
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            typeface =
+                android.graphics.Typeface.DEFAULT_BOLD
         }
 
         val backgroundPaint = Paint().apply {
@@ -67,7 +70,7 @@ fun DetectionOverlay(
             isAntiAlias = true
         }
 
-        detections.forEach { detection ->
+        detections.forEachIndexed { index, detection ->
 
             val box = detection.boundingBox
 
@@ -100,9 +103,10 @@ fun DetectionOverlay(
                 clampedRight <= clampedLeft ||
                 clampedBottom <= clampedTop
             ) {
-                return@forEach
+                return@forEachIndexed
             }
 
+            // Draw the green bounding box.
             drawRect(
                 color = boxColor,
                 topLeft = Offset(
@@ -118,11 +122,34 @@ fun DetectionOverlay(
                 )
             )
 
+            // YOLO confidence percentage.
             val confidencePercent =
                 (detection.confidence * 100).toInt()
 
+            // Read the experimental distance.
+            val experimentalDistance =
+                distanceMetersByIndex[index]
+                    ?.takeIf {
+                        it.isFinite() && it > 0f
+                    }
+
+            // Never invent a distance when
+            // calibration is unavailable.
+            val distanceText =
+                if (experimentalDistance == null) {
+                    "Distance: Unknown"
+                } else {
+                    String.format(
+                        Locale.US,
+                        "TEST ~%.2f m",
+                        experimentalDistance
+                    )
+                }
+
+            // Build the complete object label.
             val labelText =
-                "${detection.label} $confidencePercent%"
+                "${detection.label} " +
+                        "$confidencePercent% | $distanceText"
 
             val textWidth =
                 textPaint.measureText(labelText)
@@ -137,17 +164,20 @@ fun DetectionOverlay(
 
             val labelLeft = min(
                 clampedLeft,
-                max(0f, size.width - labelWidth)
+                max(
+                    0f,
+                    size.width - labelWidth
+                )
             )
 
-            val labelTop = if (
-                clampedTop >= labelHeight
-            ) {
-                clampedTop - labelHeight
-            } else {
-                clampedTop
-            }
+            val labelTop =
+                if (clampedTop >= labelHeight) {
+                    clampedTop - labelHeight
+                } else {
+                    clampedTop
+                }
 
+            // Draw label background and text.
             drawIntoCanvas { canvas ->
 
                 val nativeCanvas =

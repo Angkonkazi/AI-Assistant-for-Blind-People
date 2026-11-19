@@ -1,4 +1,3 @@
-
 package com.aiassistant.blindpeople
 
 import android.graphics.Paint
@@ -16,9 +15,26 @@ import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 
+/**
+ * Combined detection overlay.
+ *
+ * Developer A:
+ * - 3x3 spatial grid
+ * - Center focus marker
+ * - Selected object highlighting
+ *
+ * Developer B:
+ * - Experimental distance display
+ * - Distance unavailable fallback
+ *
+ * Numerical distances are experimental and
+ * must not be used for navigation guidance
+ * without real-world validation.
+ */
 @Composable
 fun DetectionOverlay(
     detections: List<YOLODetection>,
+    selectedDetection: YOLODetection? = null,
     imageWidth: Int,
     imageHeight: Int,
     modifier: Modifier = Modifier,
@@ -29,14 +45,12 @@ fun DetectionOverlay(
         modifier = modifier.fillMaxSize()
     ) {
 
-        if (
-            imageWidth <= 0 ||
-            imageHeight <= 0 ||
-            detections.isEmpty()
-        ) {
+        if (imageWidth <= 0 || imageHeight <= 0) {
             return@Canvas
         }
 
+        // Match the camera preview's FILL_CENTER
+        // scaling and cropping behavior.
         val scale = max(
             size.width / imageWidth.toFloat(),
             size.height / imageHeight.toFloat()
@@ -51,10 +65,138 @@ fun DetectionOverlay(
         val offsetY =
             (size.height - displayedHeight) / 2f
 
-        val boxColor = Color.Green
+        // ======================================
+        // DEVELOPER A: 3x3 SPATIAL GRID
+        // ======================================
 
-        val strokeWidth = 3f * density
+        val gridColor = Color.Cyan.copy(
+            alpha = 0.45f
+        )
+
+        val gridStroke = 1f * density
+
+        // First vertical grid line.
+        drawLine(
+            color = gridColor,
+            start = Offset(
+                x = size.width / 3f,
+                y = 0f
+            ),
+            end = Offset(
+                x = size.width / 3f,
+                y = size.height
+            ),
+            strokeWidth = gridStroke
+        )
+
+        // Second vertical grid line.
+        drawLine(
+            color = gridColor,
+            start = Offset(
+                x = size.width * 2f / 3f,
+                y = 0f
+            ),
+            end = Offset(
+                x = size.width * 2f / 3f,
+                y = size.height
+            ),
+            strokeWidth = gridStroke
+        )
+
+        // First horizontal grid line.
+        drawLine(
+            color = gridColor,
+            start = Offset(
+                x = 0f,
+                y = size.height / 3f
+            ),
+            end = Offset(
+                x = size.width,
+                y = size.height / 3f
+            ),
+            strokeWidth = gridStroke
+        )
+
+        // Second horizontal grid line.
+        drawLine(
+            color = gridColor,
+            start = Offset(
+                x = 0f,
+                y = size.height * 2f / 3f
+            ),
+            end = Offset(
+                x = size.width,
+                y = size.height * 2f / 3f
+            ),
+            strokeWidth = gridStroke
+        )
+
+        // ======================================
+        // DEVELOPER A: CENTER FOCUS MARKER
+        // ======================================
+
+        val focusCenter = Offset(
+            x = size.width / 2f,
+            y = size.height / 2f
+        )
+
+        val focusColor = Color.Red
+        val markerSize = 18f * density
+        val markerStroke = 2f * density
+
+        drawCircle(
+            color = focusColor,
+            radius = markerSize,
+            center = focusCenter,
+            style = Stroke(
+                width = markerStroke
+            )
+        )
+
+        // Horizontal crosshair.
+        drawLine(
+            color = focusColor,
+            start = Offset(
+                x = focusCenter.x -
+                        markerSize * 1.5f,
+                y = focusCenter.y
+            ),
+            end = Offset(
+                x = focusCenter.x +
+                        markerSize * 1.5f,
+                y = focusCenter.y
+            ),
+            strokeWidth = markerStroke
+        )
+
+        // Vertical crosshair.
+        drawLine(
+            color = focusColor,
+            start = Offset(
+                x = focusCenter.x,
+                y = focusCenter.y -
+                        markerSize * 1.5f
+            ),
+            end = Offset(
+                x = focusCenter.x,
+                y = focusCenter.y +
+                        markerSize * 1.5f
+            ),
+            strokeWidth = markerStroke
+        )
+
+        // ======================================
+        // COMBINED OBJECT DETECTION OVERLAY
+        // ======================================
+
+        val normalBoxColor = Color.Green
+        val selectedBoxColor = Color.Yellow
+
+        val normalStrokeWidth = 3f * density
+        val selectedStrokeWidth = 5f * density
+
         val textSize = 14f * density
+        val padding = 6f * density
 
         val textPaint = Paint().apply {
             color = android.graphics.Color.WHITE
@@ -72,13 +214,41 @@ fun DetectionOverlay(
 
         detections.forEachIndexed { index, detection ->
 
+            // Developer A: Selected focus object.
+            val isSelected =
+                selectedDetection == detection
+
+            val currentBoxColor =
+                if (isSelected) {
+                    selectedBoxColor
+                } else {
+                    normalBoxColor
+                }
+
+            val currentStrokeWidth =
+                if (isSelected) {
+                    selectedStrokeWidth
+                } else {
+                    normalStrokeWidth
+                }
+
+            // Get original image-space bounding box.
             val box = detection.boundingBox
 
-            val left = box.left * scale + offsetX
-            val top = box.top * scale + offsetY
-            val right = box.right * scale + offsetX
-            val bottom = box.bottom * scale + offsetY
+            // Transform the box into preview space.
+            val left =
+                box.left * scale + offsetX
 
+            val top =
+                box.top * scale + offsetY
+
+            val right =
+                box.right * scale + offsetX
+
+            val bottom =
+                box.bottom * scale + offsetY
+
+            // Keep drawings inside screen bounds.
             val clampedLeft = left.coerceIn(
                 0f,
                 size.width
@@ -106,35 +276,41 @@ fun DetectionOverlay(
                 return@forEachIndexed
             }
 
-            // Draw the green bounding box.
+            // Draw the bounding box.
             drawRect(
-                color = boxColor,
+                color = currentBoxColor,
                 topLeft = Offset(
-                    clampedLeft,
-                    clampedTop
+                    x = clampedLeft,
+                    y = clampedTop
                 ),
                 size = Size(
-                    clampedRight - clampedLeft,
-                    clampedBottom - clampedTop
+                    width =
+                        clampedRight - clampedLeft,
+                    height =
+                        clampedBottom - clampedTop
                 ),
                 style = Stroke(
-                    width = strokeWidth
+                    width = currentStrokeWidth
                 )
             )
 
-            // YOLO confidence percentage.
-            val confidencePercent =
-                (detection.confidence * 100).toInt()
+            // ==================================
+            // OBJECT LABEL
+            // ==================================
 
-            // Read the experimental distance.
+            val confidencePercent =
+                (detection.confidence * 100)
+                    .toInt()
+                    .coerceIn(0, 100)
+
+            // Developer B:
+            // Get experimental distance, if valid.
             val experimentalDistance =
                 distanceMetersByIndex[index]
                     ?.takeIf {
                         it.isFinite() && it > 0f
                     }
 
-            // Never invent a distance when
-            // calibration is unavailable.
             val distanceText =
                 if (experimentalDistance == null) {
                     "Distance: Unknown"
@@ -146,15 +322,25 @@ fun DetectionOverlay(
                     )
                 }
 
-            // Build the complete object label.
+            // Developer A:
+            // Mark the selected focus object.
+            val focusText =
+                if (isSelected) {
+                    " [FOCUS]"
+                } else {
+                    ""
+                }
+
+            // Combined label.
             val labelText =
                 "${detection.label} " +
-                        "$confidencePercent% | $distanceText"
+                        "$confidencePercent%" +
+                        focusText +
+                        " | " +
+                        distanceText
 
             val textWidth =
                 textPaint.measureText(labelText)
-
-            val padding = 6f * density
 
             val labelHeight =
                 textSize + padding * 2f

@@ -1,4 +1,3 @@
-
 package com.aiassistant.blindpeople
 
 import android.graphics.Bitmap
@@ -9,6 +8,7 @@ import android.view.ViewGroup
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -75,6 +75,11 @@ fun CameraScreen(
 
     var detections by remember {
         mutableStateOf<List<YOLODetection>>(emptyList())
+    }
+
+    // Developer A: focus object selected from stabilized detections.
+    var selectedDetection by remember {
+        mutableStateOf<YOLODetection?>(null)
     }
 
     var imageWidth by remember {
@@ -250,7 +255,36 @@ fun CameraScreen(
 
                             if (detector.isModelLoaded()) {
 
-                                bitmap = imageProxy.toBitmap()
+                                // Developer A: use the shared crop rectangle so
+                                // the analysis bitmap matches the preview viewport.
+                                Log.d(
+                                    "CAMERA_CROP_CHECK",
+                                    "Image size: ${imageProxy.width}x${imageProxy.height}, " +
+                                            "CropRect: ${imageProxy.cropRect}, " +
+                                            "Rotation: ${imageProxy.imageInfo.rotationDegrees}"
+                                )
+
+                                val fullBitmap = imageProxy.toBitmap()
+                                val crop = imageProxy.cropRect
+                                try {
+                                    bitmap = Bitmap.createBitmap(
+                                        fullBitmap,
+                                        crop.left,
+                                        crop.top,
+                                        crop.width(),
+                                        crop.height()
+                                    )
+                                } finally {
+                                    if (bitmap !== fullBitmap) {
+                                        fullBitmap.recycle()
+                                    }
+                                }
+
+                                Log.d(
+                                    "BITMAP_SIZE_CHECK",
+                                    "Bitmap: ${bitmap.width}x${bitmap.height}, " +
+                                            "CropRect: ${imageProxy.cropRect}"
+                                )
 
                                 val rotationDegrees =
                                     imageProxy.imageInfo.rotationDegrees
@@ -284,9 +318,68 @@ fun CameraScreen(
                                 val rawDetections =
                                     detector.detect(frame)
 
+                                // Developer A: horizontal/vertical position
+                                // and focus-point analysis for each detection.
+                                val spatialAnalyzer = SpatialAnalyzer()
+                                val focusPointManager = FocusPointManager()
+
+                                for (detection in rawDetections) {
+                                    val horizontal =
+                                        spatialAnalyzer.getHorizontalPosition(
+                                            detection = detection,
+                                            imageWidth = frame.width
+                                        )
+                                    val vertical =
+                                        spatialAnalyzer.getVerticalPosition(
+                                            detection = detection,
+                                            imageHeight = frame.height
+                                        )
+                                    val focusResult =
+                                        focusPointManager.analyzeFocus(
+                                            detection = detection,
+                                            imageWidth = frame.width,
+                                            imageHeight = frame.height
+                                        )
+                                    Log.d(
+                                        "FOCUS_POINT_CHECK",
+                                        "Object=${detection.label}, " +
+                                                "Relation=${focusResult.relation}, " +
+                                                "ContainsFocus=${focusResult.containsFocusPoint}, " +
+                                                "Distance=${focusResult.normalizedDistance}"
+                                    )
+                                    Log.d(
+                                        "SPATIAL_DIRECTION",
+                                        "Object=${detection.label}, " +
+                                                "X=${horizontal.normalizedCenterX}, " +
+                                                "Y=${vertical.normalizedCenterY}, " +
+                                                "Horizontal=${horizontal.zone}, " +
+                                                "Vertical=${vertical.zone}"
+                                    )
+                                }
+
                                 // Step 2: Stabilize bounding boxes.
                                 val stabilizedDetections =
                                     stabilizer.update(rawDetections)
+
+                                // Developer A: choose and display exactly one focus object.
+                                val selectedFocus =
+                                    focusPointManager.selectFocusObject(
+                                        detections = stabilizedDetections,
+                                        imageWidth = frame.width,
+                                        imageHeight = frame.height
+                                    )
+                                selectedDetection = selectedFocus?.detection
+                                if (selectedFocus != null) {
+                                    Log.d(
+                                        "FOCUS_SELECTION",
+                                        "Selected=${selectedFocus.detection.label}, " +
+                                                "Relation=${selectedFocus.relation}, " +
+                                                "Confidence=${selectedFocus.detection.confidence}, " +
+                                                "Distance=${selectedFocus.normalizedDistance}"
+                                    )
+                                } else {
+                                    Log.d("FOCUS_SELECTION", "No object selected")
+                                }
 
                                 // Step 3: Update image information.
                                 imageWidth = frame.width
@@ -446,13 +539,27 @@ fun CameraScreen(
                         }
                     }
 
+                    // Developer A: preview and analyzer share one viewport.
+                    // This is important for matching box geometry to preview.
+                    val sharedViewPort =
+                        previewView.viewPort
+                            ?: throw IllegalStateException(
+                                "Camera PreviewView viewport is not ready"
+                            )
+
+                    val useCaseGroup =
+                        UseCaseGroup.Builder()
+                            .setViewPort(sharedViewPort)
+                            .addUseCase(preview)
+                            .addUseCase(imageAnalysis)
+                            .build()
+
                     cameraProvider.unbindAll()
 
                     cameraProvider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageAnalysis
+                        useCaseGroup
                     )
 
                     cameraStatus = "Camera started"
@@ -520,6 +627,7 @@ fun CameraScreen(
 
         DetectionOverlay(
             detections = detections,
+            selectedDetection = selectedDetection,
             imageWidth = imageWidth,
             imageHeight = imageHeight,
             modifier = Modifier.fillMaxSize(),

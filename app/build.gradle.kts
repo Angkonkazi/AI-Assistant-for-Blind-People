@@ -66,6 +66,9 @@ dependencies {
     // TensorFlow Lite - YOLO11n Inference
     implementation("org.tensorflow:tensorflow-lite:2.17.0")
 
+    // ONNX Runtime - Depth Anything V2 Metric Indoor Small
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.32.0")
+
     // Testing Dependencies
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

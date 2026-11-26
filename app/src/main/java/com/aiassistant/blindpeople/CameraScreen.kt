@@ -1,8 +1,8 @@
-
 package com.aiassistant.blindpeople
 
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.view.ViewGroup
@@ -15,7 +15,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -23,9 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -38,29 +34,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.aiassistant.blindpeople.distance.CalibratedDistanceProcessor
-import com.aiassistant.blindpeople.distance.CalibrationSample
-import com.aiassistant.blindpeople.distance.CameraCalibrationProfile
-import com.aiassistant.blindpeople.distance.CameraConfiguration
-import com.aiassistant.blindpeople.distance.DistanceCalibration
-import com.aiassistant.blindpeople.distance.DistanceDetectionInput
+import com.aiassistant.blindpeople.distance.AutomaticDistanceEstimator
+import com.aiassistant.blindpeople.distance.AutomaticFocalLengthProvider
+import com.aiassistant.blindpeople.distance.ProximityEstimator
 import java.util.Locale
 import java.util.concurrent.Executors
 
-/**
- * Session-only reference object for controlled
- * distance experiments.
- */
-private data class DistanceDemoReference(
-    val classId: Int,
-    val label: String,
-    val measuredHeightMeters: Float
+private data class MetricFrameResult(
+    val detections: List<YOLODetection> = emptyList(),
+    val imageWidth: Int = 0,
+    val imageHeight: Int = 0,
+    val distanceMetersByIndex: Map<Int, Float?> = emptyMap()
 )
 
 @Composable
@@ -73,65 +62,15 @@ fun CameraScreen(
     // Process one out of every four analyzer frames.
     val frameSamplingInterval = 4
 
-    var detections by remember {
-        mutableStateOf<List<YOLODetection>>(emptyList())
+    var metricFrame by remember {
+        mutableStateOf(MetricFrameResult())
     }
 
-    var imageWidth by remember {
-        mutableIntStateOf(0)
+    val automaticDistanceEstimator = remember {
+        AutomaticDistanceEstimator()
     }
 
-    var imageHeight by remember {
-        mutableIntStateOf(0)
-    }
-
-    // Distance is initially unavailable.
-    // No example calibration values are used.
-    var distanceMetersByIndex by remember {
-        mutableStateOf<Map<Int, Float?>>(emptyMap())
-    }
-
-    var currentRotationDegrees by remember {
-        mutableIntStateOf(0)
-    }
-
-    var measuredHeightText by remember {
-        mutableStateOf("")
-    }
-
-    var measuredDistanceText by remember {
-        mutableStateOf("")
-    }
-
-    var calibrationMessage by remember {
-        mutableStateOf(
-            "Distance: Unknown (calibrate a measured reference object)"
-        )
-    }
-
-    var demoReference by remember {
-        mutableStateOf<DistanceDemoReference?>(null)
-    }
-
-    val distanceProcessor = remember {
-        CalibratedDistanceProcessor()
-    }
-
-    val distanceLock = remember { Any() }
-
-    // These camera identifiers are placeholders
-    // for this experimental session only.
-    // Do not save this profile permanently.
-    fun activeCameraConfiguration(): CameraConfiguration {
-        return CameraConfiguration(
-            cameraId = "cameraX-default-back-session-only",
-            lensId = "back-default-session-only",
-            imageWidth = imageWidth,
-            imageHeight = imageHeight,
-            rotationDegrees = currentRotationDegrees,
-            zoomRatio = 1.0f
-        )
-    }
+    val proximityEstimator = remember { ProximityEstimator() }
 
     val detector = remember {
         YOLODetector(context.applicationContext)
@@ -222,6 +161,23 @@ fun CameraScreen(
                             )
                             .build()
 
+                    cameraProvider.unbindAll()
+
+                    val camera = cameraProvider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        imageAnalysis
+                    )
+
+                    val focalProvider = try {
+                        AutomaticFocalLengthProvider(camera.cameraInfo)
+                    } catch (e: Exception) {
+                        Log.e("FOCAL_LENGTH_TEST", "Provider initialization failed", e)
+                        null
+                    }
+                    var lastGeometry: String? = null
+
                     imageAnalysis.setAnalyzer(
                         cameraExecutor
                     ) { imageProxy ->
@@ -280,6 +236,37 @@ fun CameraScreen(
 
                                 val frame = rotatedBitmap
 
+                                // Read geometry for this exact analysis frame.
+                                val focalLength = try {
+                                    val focal = focalProvider?.estimate(imageProxy)
+                                    val matrixValues = FloatArray(9)
+                                    imageProxy.imageInfo.sensorToBufferTransformMatrix
+                                        .getValues(matrixValues)
+                                    val geometry = "buffer=${imageProxy.width}x${imageProxy.height} " +
+                                            "bitmap=${frame.width}x${frame.height} " +
+                                            "rotation=$rotationDegrees crop=${imageProxy.cropRect.toShortString()} " +
+                                            "matrix=${matrixValues.contentToString()} " +
+                                            (focal?.let {
+                                                "camera=${it.cameraId} fx=${it.focalX} fy=${it.focalY} " +
+                                                        "expected_bitmap=${it.imageWidth}x${it.imageHeight} source=${it.source} " +
+                                                        "dimensions_match=${it.imageWidth == frame.width && it.imageHeight == frame.height}"
+                                            } ?: "focal=UNAVAILABLE")
+                                    if (geometry != lastGeometry) {
+                                        Log.i("FOCAL_LENGTH_TEST", geometry)
+                                        lastGeometry = geometry
+                                    }
+                                    // Conservatively reject non-full buffer crops.
+                                    val crop = imageProxy.cropRect
+                                    focal?.takeIf {
+                                        crop.left == 0 && crop.top == 0 &&
+                                                crop.right == imageProxy.width &&
+                                                crop.bottom == imageProxy.height
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("FOCAL_LENGTH_TEST", "Geometry diagnostic failed", e)
+                                    null
+                                }
+
                                 // Step 1: YOLO11n inference.
                                 val rawDetections =
                                     detector.detect(frame)
@@ -288,81 +275,86 @@ fun CameraScreen(
                                 val stabilizedDetections =
                                     stabilizer.update(rawDetections)
 
-                                // Step 3: Update image information.
-                                imageWidth = frame.width
-                                imageHeight = frame.height
-                                currentRotationDegrees =
-                                    rotationDegrees
+                                // Step 3: Calculate experimental metric estimates
+                                // using only detections from this exact frame.
+                                val distanceStart = SystemClock.elapsedRealtimeNanos()
+                                val distanceResults = automaticDistanceEstimator.estimate(
+                                    detections = rawDetections,
+                                    focalLength = focalLength,
+                                    imageWidth = frame.width,
+                                    imageHeight = frame.height
+                                )
+                                val distanceMap = distanceResults.associate {
+                                    it.detectionIndex to it.estimatedMeters
+                                }
+                                val distanceElapsedNs =
+                                    SystemClock.elapsedRealtimeNanos() - distanceStart
 
-                                detections = stabilizedDetections
+                                // Publish one immutable frame result. Do not mix
+                                // retained/stabilized boxes with current raw indexes.
+                                metricFrame = MetricFrameResult(
+                                    detections = rawDetections.toList(),
+                                    imageWidth = frame.width,
+                                    imageHeight = frame.height,
+                                    distanceMetersByIndex = distanceMap
+                                )
 
-                                // Step 4: Experimental distance.
-                                // Only one measured reference object
-                                // of its class may receive a known
-                                // physical height.
-                                val reference = demoReference
+                                Log.i(
+                                    "DISTANCE_BENCHMARK",
+                                    String.format(
+                                        Locale.US,
+                                        "frame=%d objects=%d estimates=%d elapsed_ns=%d elapsed_ms=%.4f",
+                                        inferenceCounter, distanceResults.size,
+                                        distanceResults.count { it.estimatedMeters != null },
+                                        distanceElapsedNs, distanceElapsedNs / 1_000_000.0
+                                    )
+                                )
 
-                                val matchingCount =
-                                    if (reference == null) {
-                                        0
-                                    } else {
-                                        stabilizedDetections.count {
-                                            it.classId ==
-                                                    reference.classId
-                                        }
-                                    }
+                                for (result in distanceResults) {
+                                    Log.i(
+                                        "DISTANCE_TEST",
+                                        "frame=$inferenceCounter object=${result.objectName} " +
+                                                "index=${result.detectionIndex} " +
+                                                "estimated_m=${result.estimatedMeters ?: "UNKNOWN"} " +
+                                                "reference_m=${result.referenceSizeMeters} " +
+                                                "axis=${result.referenceDimension} " +
+                                                "box_px=${result.boundingBoxPixels} " +
+                                                "focal_px=${result.focalLengthPixels} " +
+                                                "status=${result.status}"
+                                    )
+                                }
 
-                                val inputs =
-                                    stabilizedDetections.mapIndexed {
-                                            index, detection ->
+                                // Preserve the original raw proximity benchmark.
+                                val proximityStart = SystemClock.elapsedRealtimeNanos()
+                                val proximityResults = proximityEstimator.estimate(
+                                    detections = rawDetections,
+                                    imageWidth = frame.width,
+                                    imageHeight = frame.height
+                                )
+                                val proximityElapsedNs =
+                                    SystemClock.elapsedRealtimeNanos() - proximityStart
 
-                                        val knownHeight =
-                                            if (
-                                                reference != null &&
-                                                matchingCount == 1 &&
-                                                detection.classId ==
-                                                reference.classId
-                                            ) {
-                                                reference.measuredHeightMeters
-                                            } else {
-                                                null
-                                            }
-
-                                        DistanceDetectionInput(
-                                            detectionIndex = index,
-                                            objectName = detection.label,
-                                            confidence =
-                                                detection.confidence,
-                                            left =
-                                                detection.boundingBox.left,
-                                            top =
-                                                detection.boundingBox.top,
-                                            right =
-                                                detection.boundingBox.right,
-                                            bottom =
-                                                detection.boundingBox.bottom,
-                                            realObjectHeightMeters =
-                                                knownHeight
+                                Log.i(
+                                    "PROXIMITY_BENCHMARK",
+                                    String.format(
+                                        Locale.US,
+                                        "frame=%d objects=%d elapsed_ns=%d elapsed_ms=%.4f",
+                                        inferenceCounter, proximityResults.size,
+                                        proximityElapsedNs, proximityElapsedNs / 1_000_000.0
+                                    )
+                                )
+                                for (result in proximityResults) {
+                                    Log.i(
+                                        "PROXIMITY_TEST",
+                                        String.format(
+                                            Locale.US,
+                                            "frame=%d object=%s index=%d confidence=%.2f area=%.2f%% experimental_proximity=%s",
+                                            inferenceCounter, result.objectName,
+                                            result.detectionIndex, result.confidence,
+                                            result.areaRatio * 100f, result.proximityLevel.name
                                         )
-                                    }
-
-                                val configuration =
-                                    activeCameraConfiguration()
-
-                                val distanceResults =
-                                    synchronized(distanceLock) {
-                                        distanceProcessor.process(
-                                            detections = inputs,
-                                            currentConfiguration =
-                                                configuration
-                                        )
-                                    }
-
-                                distanceMetersByIndex =
-                                    distanceResults.associate {
-                                        it.detectionIndex to
-                                                it.distance.estimatedMeters
-                                    }
+                                    )
+                                }
 
                                 debugInfo =
                                     detector.getDebugInfo()
@@ -406,11 +398,13 @@ fun CameraScreen(
                                 )
 
                             } else {
+                                metricFrame = MetricFrameResult()
                                 debugInfo =
                                     detector.getDebugInfo()
                             }
 
                         } catch (e: Exception) {
+                            metricFrame = MetricFrameResult()
 
                             val message =
                                 "${e.javaClass.simpleName}: " +
@@ -445,15 +439,6 @@ fun CameraScreen(
                             imageProxy.close()
                         }
                     }
-
-                    cameraProvider.unbindAll()
-
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageAnalysis
-                    )
 
                     cameraStatus = "Camera started"
 
@@ -519,11 +504,11 @@ fun CameraScreen(
         )
 
         DetectionOverlay(
-            detections = detections,
-            imageWidth = imageWidth,
-            imageHeight = imageHeight,
+            detections = metricFrame.detections,
+            imageWidth = metricFrame.imageWidth,
+            imageHeight = metricFrame.imageHeight,
             modifier = Modifier.fillMaxSize(),
-            distanceMetersByIndex = distanceMetersByIndex
+            distanceMetersByIndex = metricFrame.distanceMetersByIndex
         )
 
         Column(
@@ -548,182 +533,9 @@ fun CameraScreen(
             )
 
             Text(
-                text = "DISTANCE EXPERIMENT (measured object only)",
-                color = Color.Yellow,
-                fontSize = 11.sp
-            )
-
-            Text(
-                text = "Aim at one object; measure its FULL height and " +
-                        "distance from the camera. Keep the same object in view.",
+                text = "TEST ONLY: Unvalidated size-based estimates. Not for navigation. Raw same-frame boxes.",
                 color = Color.White,
-                fontSize = 10.sp,
-                lineHeight = 12.sp
-            )
-
-            Row(
-                horizontalArrangement =
-                    Arrangement.spacedBy(6.dp)
-            ) {
-
-                OutlinedTextField(
-                    value = measuredHeightText,
-                    onValueChange = {
-                        measuredHeightText = it
-                    },
-                    label = {
-                        Text(
-                            "Height (m)",
-                            fontSize = 10.sp
-                        )
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Decimal
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
-
-                OutlinedTextField(
-                    value = measuredDistanceText,
-                    onValueChange = {
-                        measuredDistanceText = it
-                    },
-                    label = {
-                        Text(
-                            "Distance (m)",
-                            fontSize = 10.sp
-                        )
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Decimal
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Button(
-                onClick = {
-
-                    val height =
-                        measuredHeightText.toFloatOrNull()
-
-                    val actualDistance =
-                        measuredDistanceText.toFloatOrNull()
-
-                    val topDetection =
-                        detections.maxByOrNull {
-                            it.confidence
-                        }
-
-                    val sameClassCount =
-                        if (topDetection == null) {
-                            0
-                        } else {
-                            detections.count {
-                                it.classId ==
-                                        topDetection.classId
-                            }
-                        }
-
-                    if (
-                        height == null ||
-                        !height.isFinite() ||
-                        height <= 0f ||
-                        actualDistance == null ||
-                        !actualDistance.isFinite() ||
-                        actualDistance <= 0f
-                    ) {
-                        calibrationMessage =
-                            "Enter positive measured values in meters"
-
-                    } else if (
-                        imageWidth <= 0 ||
-                        imageHeight <= 0 ||
-                        topDetection == null ||
-                        sameClassCount != 1
-                    ) {
-                        calibrationMessage =
-                            "Aim at ONE visible object of its class"
-
-                    } else {
-
-                        val sample = CalibrationSample(
-                            actualDistanceMeters =
-                                actualDistance,
-                            realObjectHeightMeters =
-                                height,
-                            objectHeightPixels =
-                                topDetection.boundingBox.height()
-                        )
-
-                        val calibration =
-                            DistanceCalibration()
-                                .calculateFocalLength(sample)
-
-                        val focal =
-                            calibration.focalLengthPixels
-
-                        if (
-                            !calibration.isValid ||
-                            focal == null
-                        ) {
-                            calibrationMessage =
-                                "Calibration failed: check full bounding box"
-
-                        } else {
-
-                            // Calibration is for this
-                            // session only.
-                            val profile =
-                                CameraCalibrationProfile(
-                                    configuration =
-                                        activeCameraConfiguration(),
-                                    focalLengthPixels = focal,
-                                    calibrationSampleCount = 1
-                                )
-
-                            val registered =
-                                synchronized(distanceLock) {
-                                    distanceProcessor
-                                        .registerCalibration(profile)
-                                }
-
-                            if (registered) {
-
-                                demoReference =
-                                    DistanceDemoReference(
-                                        classId =
-                                            topDetection.classId,
-                                        label =
-                                            topDetection.label,
-                                        measuredHeightMeters =
-                                            height
-                                    )
-
-                                calibrationMessage =
-                                    "TEST ONLY: ${topDetection.label}; " +
-                                            "keep the SAME measured object visible"
-
-                            } else {
-                                calibrationMessage =
-                                    "Calibration registration failed"
-                            }
-                        }
-                    }
-                }
-            ) {
-                Text(
-                    "Calibrate visible reference (TEST)"
-                )
-            }
-
-            Text(
-                text = calibrationMessage,
-                color = Color.Yellow,
-                fontSize = 10.sp,
-                lineHeight = 12.sp
+                fontSize = 11.sp
             )
 
             DebugLine(

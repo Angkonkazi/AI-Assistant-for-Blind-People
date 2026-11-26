@@ -1,3 +1,4 @@
+
 package com.aiassistant.blindpeople
 
 import android.Manifest
@@ -20,6 +21,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.aiassistant.blindpeople.distance.CameraMetadataProvider
 import com.aiassistant.blindpeople.ui.theme.AIAssistantForBlindPeopleTheme
 import java.util.Locale
 
@@ -40,11 +42,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Read camera hardware metadata once
+        // during activity initialization.
+        CameraMetadataProvider(applicationContext)
+            .logCameraMetadata()
+
         textToSpeech = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val result = textToSpeech?.setLanguage(Locale.ENGLISH)
+                val result =
+                    textToSpeech?.setLanguage(Locale.ENGLISH)
 
-                if (result != TextToSpeech.LANG_MISSING_DATA &&
+                if (
+                    result != TextToSpeech.LANG_MISSING_DATA &&
                     result != TextToSpeech.LANG_NOT_SUPPORTED
                 ) {
                     speak("AI Vision Assistant started.")
@@ -134,10 +143,12 @@ fun AssistantScreen(
             contract = ActivityResultContracts.RequestPermission()
         ) { isGranted ->
             hasMicrophonePermission = isGranted
+
             if (isGranted) {
                 recognitionStatus = "Microphone ready"
             } else {
-                recognitionStatus = "Microphone permission denied"
+                recognitionStatus =
+                    "Microphone permission denied"
             }
         }
 
@@ -154,7 +165,10 @@ fun AssistantScreen(
     }
 
     LaunchedEffect(hasCameraPermission) {
-        if (hasCameraPermission && !hasMicrophonePermission) {
+        if (
+            hasCameraPermission &&
+            !hasMicrophonePermission
+        ) {
             microphonePermissionLauncher.launch(
                 Manifest.permission.RECORD_AUDIO
             )
@@ -173,15 +187,19 @@ fun AssistantScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                horizontalAlignment =
+                    Alignment.CenterHorizontally,
+                verticalArrangement =
+                    Arrangement.Center
             ) {
                 Text(
                     text = "Camera permission required",
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
 
                 Button(
                     onClick = {
@@ -199,32 +217,42 @@ fun AssistantScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth(),
+
             color = MaterialTheme.colorScheme.surface.copy(
                 alpha = 0.95f
             )
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                horizontalAlignment =
+                    Alignment.CenterHorizontally
             ) {
                 Text(
                     text = recognitionStatus,
-                    style = MaterialTheme.typography.bodyMedium
+                    style =
+                        MaterialTheme.typography.bodyMedium
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
 
                 Text(
                     text = recognizedCommand,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style =
+                        MaterialTheme.typography.bodyLarge,
+
                     textAlign = TextAlign.Center,
+
                     modifier = Modifier.semantics {
                         contentDescription =
                             "Recognized command: $recognizedCommand"
                     }
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
 
                 Button(
                     onClick = {
